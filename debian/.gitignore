@@ -1,0 +1,6 @@
+/.debhelper
+debhelper-build-stamp
+/files
+*.debhelper
+*.substvars
+/wtfd

@@ -1,0 +1,12 @@
+Source: wtfd
+Maintainer: Ted Percival <ted@tedp.id.au>
+Priority: optional
+Section: net
+Build-Depends: debhelper (>= 11)
+Standards-Version: 4.2.1.1
+
+Package: wtfd
+Architecture: any
+Depends: ${misc:Depends}
+Description: wtf daemon
+ A network service that wonders "wtf" on port 23206.

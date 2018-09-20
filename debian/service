@@ -1,0 +1,16 @@
+[Service]
+ExecStart=/usr/sbin/wtfd
+DynamicUser=true
+CapabilityBoundingSet=
+NoNewPrivileges=true
+# If this breaks wtfd, try adding @system-service or just disable
+# SystemCallFilter altogether.
+SystemCallFilter=@basic-io @network-io @signal @file-system @process mprotect brk
+SystemCallArchitectures=native
+DeviceAccess=closed
+MemoryHigh=2M
+MemoryMax=10M
+TasksMax=1
+
+[Install]
+WantedBy=multi-user.target
