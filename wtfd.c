@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
         die("listen");
 
     while ((client = accept(sock, NULL, NULL)) != -1) {
-        const char const msg[] = "wtf\n";
+        const char msg[] = "wtf\n";
         send(client, msg, sizeof(msg), 0);
         shutdown(client, SHUT_RDWR);
         close(client);
