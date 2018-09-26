@@ -1,3 +1,14 @@
+wtfd (1.1) unstable; urgency=medium
+
+  * Specify release tag format in gbp.conf
+  * Remove "Debian" from gbp tag message
+  * Add README
+  * Don't send NUL-terminator
+  * Fail disallowed syscalls with EPERM
+  * Add explicit list of syscalls for old systemd
+
+ -- Ted Percival <ted@tedp.id.au>  Wed, 26 Sep 2018 13:08:00 -0600
+
 wtfd (1.0) unstable; urgency=medium
 
   * Initial release.
