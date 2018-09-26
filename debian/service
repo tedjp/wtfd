@@ -3,9 +3,11 @@ ExecStart=/usr/sbin/wtfd
 DynamicUser=true
 CapabilityBoundingSet=
 NoNewPrivileges=true
-# If this breaks wtfd, try adding @system-service or just disable
-# SystemCallFilter altogether.
 SystemCallFilter=@basic-io @network-io @signal @file-system @process mprotect brk
+# Ubuntu 16.04's systemd 229 doesn't have any of the preset groups above, so
+# here's an explicit list of syscalls:
+SystemCallFilter=accept access arch_prctl bind close fstat listen mmap munmap
+SystemCallFilter=open read rt_sigaction sendto socket
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 DeviceAccess=closed
