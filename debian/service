@@ -6,6 +6,7 @@ NoNewPrivileges=true
 # If this breaks wtfd, try adding @system-service or just disable
 # SystemCallFilter altogether.
 SystemCallFilter=@basic-io @network-io @signal @file-system @process mprotect brk
+SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 DeviceAccess=closed
 MemoryHigh=2M
