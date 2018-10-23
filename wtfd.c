@@ -156,11 +156,15 @@ int main(int argc, char *argv[]) {
         die("epoll_create");
 
     struct epoll_event event = {
-        .events = EPOLLIN | EPOLLEXCLUSIVE,
+        .events = EPOLLIN,
         .data = {
             .fd = sock,
         },
     };
+
+#if defined(EPOLLEXCLUSIVE)
+    event.events |= EPOLLEXCLUSIVE;
+#endif
 
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, sock, &event) == -1)
         die("epoll_ctl add");
