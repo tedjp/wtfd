@@ -51,14 +51,22 @@ static void signull(int signum) {
     /* The sound of silence. */
 }
 
+static const char response[] = "HTTP/1.1 200 OK\n"
+"Content-Type: application/json\n"
+"Content-Length: 15\n"
+"Connection: close\n"
+"\n"
+"{\"some\":\"json\"}";
+
 static void serve_client(int epfd, const struct epoll_event *event) {
     int client = event->data.fd;
 
-    const char msg[] = "wtf\n";
-    ssize_t sz = send(client, msg, sizeof(msg) - 1, 0);
+    const size_t resp_sz = sizeof(response) - 1;
+
+    ssize_t sz = send(client, response, resp_sz, 0);
     if (sz == -1)
         perror("send()");
-    else if (sz < sizeof(msg) - 1)
+    else if (sz < resp_sz)
         fprintf(stderr, "short write\n");
 
     if (epoll_ctl(epfd, EPOLL_CTL_DEL, client, NULL) == -1)
