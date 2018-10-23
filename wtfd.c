@@ -196,8 +196,7 @@ static void reuseaddr(int sock) {
         perror("setsockopt SO_REUSEADDR");
 }
 
-#if 0 // defer_accept marginally reduces throughput.
-static void defer_accept(int sock) {
+static void enable_defer_accept(int sock) {
 #if defined (TCP_DEFER_ACCEPT)
     const int seconds = 2;
     if (setsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &seconds, sizeof(seconds)) == -1)
@@ -206,7 +205,24 @@ static void defer_accept(int sock) {
         fprintf(stderr, "TCP_DEFER_ACCEPT enabled\n");
 #endif
 }
+
+static void enable_fastopen(int sock) {
+#if defined(TCP_FASTOPEN)
+    const int queue_len = 100;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_FASTOPEN, &queue_len, sizeof(queue_len)) == -1)
+        perror("setsockopt(TCP_FASTOPEN)");
+    else
+        fprintf(stderr, "TCP_FASTOPEN enabled\n");
 #endif
+}
+
+static void enable_nodelay(int sock) {
+    const int yes = 1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == -1)
+        perror("setsockopt(TCP_NODELAY)");
+    else
+        fprintf(stderr, "TCP_NODELAY enabled\n");
+}
 
 int main(int argc, char *argv[]) {
     int sock;
@@ -234,14 +250,18 @@ int main(int argc, char *argv[]) {
         die("signal(SIGPIPE)");
 
     // TODO: SO_REUSEPORT a unique socket per child
-    // TODO: Enable TCP_FASTOPEN
-    // TODO: Enable TCP_NODELAY (since we send the response in one go)
     sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1) 
         die("socket");
 
     reuseaddr(sock);
-    //defer_accept(sock);
+    // This is slightly slower in this case, but probably want to enable it on a
+    // real server.
+    //enable_defer_accept(sock);
+    // wrk doesn't seem to use fastopen, but support it anyway.
+    enable_fastopen(sock);
+    // nodelay reduces throughput too :(
+    //enable_nodelay(sock);
 
     memset(&sin6, 0, sizeof(sin6));
     sin6.sin6_family = AF_INET6;
