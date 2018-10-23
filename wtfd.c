@@ -87,13 +87,13 @@ static void ep_mod_or_cleanup(int epfd, int fd, struct epoll_event *event) {
 
 static void notify_when_readable(int epfd, int fd) {
     struct epoll_event event;
-    setup_event(&event, fd, EPOLLIN | EPOLLONESHOT);
+    setup_event(&event, fd, EPOLLIN | EPOLLONESHOT | EPOLLET);
     ep_mod_or_cleanup(epfd, fd, &event);
 }
 
 static void notify_when_writable(int epfd, int fd) {
     struct epoll_event event;
-    setup_event(&event, fd, EPOLLOUT | EPOLLONESHOT);
+    setup_event(&event, fd, EPOLLOUT | EPOLLONESHOT | EPOLLET);
     ep_mod_or_cleanup(epfd, fd, &event);
 }
 
