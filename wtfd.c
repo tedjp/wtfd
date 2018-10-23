@@ -28,6 +28,7 @@
 
 #define _GNU_SOURCE 1
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <unistd.h>
+
+#define NCPUS 8
 
 static void die(const char *cause) __attribute__((noreturn));
 void die(const char *cause) {
@@ -68,6 +71,11 @@ static void serve_client(int epfd, const struct epoll_event *event) {
 static void new_client(int epfd, const struct epoll_event *event) {
     int client = accept4(event->data.fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (client == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // other process probably got it.
+            return;
+        }
+
         perror("accept4");
         return;
     }
@@ -90,6 +98,17 @@ static void dispatch(int epfd, const struct epoll_event *event) {
         new_client(epfd, event);
     } else if (event->events & EPOLLOUT) {
         serve_client(epfd, event);
+    }
+}
+
+static void multiply() {
+    // parent keeps running too
+    for (unsigned i = 1; i < NCPUS; ++i) {
+        pid_t pid = fork();
+        if (pid == -1)
+            perror("fork");
+        if (pid == 0)
+            return;
     }
 }
 
@@ -130,12 +149,14 @@ int main(int argc, char *argv[]) {
     if (-1 == listen(sock, 1))
         die("listen");
 
+    multiply();
+
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
         die("epoll_create");
 
     struct epoll_event event = {
-        .events = EPOLLIN,
+        .events = EPOLLIN | EPOLLEXCLUSIVE,
         .data = {
             .fd = sock,
         },
