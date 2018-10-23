@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -195,6 +196,18 @@ static void reuseaddr(int sock) {
         perror("setsockopt SO_REUSEADDR");
 }
 
+#if 0 // defer_accept marginally reduces throughput.
+static void defer_accept(int sock) {
+#if defined (TCP_DEFER_ACCEPT)
+    const int seconds = 2;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &seconds, sizeof(seconds)) == -1)
+        perror("setsockopt TCP_DEFER_ACCEPT");
+    else
+        fprintf(stderr, "TCP_DEFER_ACCEPT enabled\n");
+#endif
+}
+#endif
+
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
@@ -223,12 +236,12 @@ int main(int argc, char *argv[]) {
     // TODO: SO_REUSEPORT a unique socket per child
     // TODO: Enable TCP_FASTOPEN
     // TODO: Enable TCP_NODELAY (since we send the response in one go)
-    // TODO: Set TCP_DEFER_ACCEPT
     sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1) 
         die("socket");
 
     reuseaddr(sock);
+    //defer_accept(sock);
 
     memset(&sin6, 0, sizeof(sin6));
     sin6.sin6_family = AF_INET6;
