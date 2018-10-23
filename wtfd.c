@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
     if (-1 == bind(sock, (struct sockaddr *)&sin6, sizeof(sin6)))
         die("bind");
 
-    if (-1 == listen(sock, 1))
+    if (-1 == listen(sock, 1000))
         die("listen");
 
     multiply();
