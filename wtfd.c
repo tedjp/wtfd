@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
         die("epoll_ctl add");
 
     for (;;) {
-        struct epoll_event events[2];
+        struct epoll_event events[10];
         int count = epoll_wait(epfd, events, sizeof(events) / sizeof(events[0]), -1);
         if (count == -1)
             die("epoll_wait");
