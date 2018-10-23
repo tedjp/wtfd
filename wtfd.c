@@ -145,14 +145,16 @@ int main(int argc, char *argv[]) {
         die("epoll_ctl add");
 
     for (;;) {
-        int count = epoll_wait(epfd, &event, 1, -1);
+        struct epoll_event events[2];
+        int count = epoll_wait(epfd, events, sizeof(events) / sizeof(events[0]), -1);
         if (count == -1)
             die("epoll_wait");
 
         if (count == 0)
             continue;
 
-        dispatch(epfd, &event);
+        for (unsigned i = 0; i < count; ++i)
+            dispatch(epfd, &events[i]);
     }
 
     close(sock);
