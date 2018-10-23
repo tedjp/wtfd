@@ -26,9 +26,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE 1
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -45,8 +48,53 @@ static void signull(int signum) {
     /* The sound of silence. */
 }
 
+static void serve_client(int epfd, const struct epoll_event *event) {
+    int client = event->data.fd;
+
+    const char msg[] = "wtf\n";
+    ssize_t sz = send(client, msg, sizeof(msg) - 1, 0);
+    if (sz == -1)
+        perror("send()");
+    else if (sz < sizeof(msg) - 1)
+        fprintf(stderr, "short write\n");
+
+    if (epoll_ctl(epfd, EPOLL_CTL_DEL, client, NULL) == -1)
+        perror("epoll_ctl DEL");
+
+    if (close(client) == -1)
+        perror("close");
+}
+
+static void new_client(int epfd, const struct epoll_event *event) {
+    int client = accept4(event->data.fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (client == -1) {
+        perror("accept4");
+        return;
+    }
+
+    struct epoll_event wrevent = {
+        .events = EPOLLOUT,
+        .data = {
+            .fd = client,
+        },
+    };
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, client, &wrevent) == -1) {
+        perror("epoll_ctl ADD");
+        if (close(client) == -1)
+            perror("close");
+    }
+}
+static void dispatch(int epfd, const struct epoll_event *event) {
+    if (event->events & EPOLLIN) {
+        new_client(epfd, event);
+    } else if (event->events & EPOLLOUT) {
+        serve_client(epfd, event);
+    }
+}
+
 int main(int argc, char *argv[]) {
-    int sock, client;
+    int sock;
     struct sockaddr_in6 sin6;
     uint16_t portnum = 23206;
     struct sigaction sa;
@@ -67,7 +115,7 @@ int main(int argc, char *argv[]) {
     if (-1 == sigaction(SIGQUIT, &sa, NULL))
         die("sigaction");
 
-    sock = socket(PF_INET6, SOCK_STREAM, 0);
+    sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1) 
         die("socket");
 
@@ -82,11 +130,29 @@ int main(int argc, char *argv[]) {
     if (-1 == listen(sock, 1))
         die("listen");
 
-    while ((client = accept(sock, NULL, NULL)) != -1) {
-        const char msg[] = "wtf\n";
-        send(client, msg, sizeof(msg) - 1, 0);
-        shutdown(client, SHUT_RDWR);
-        close(client);
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd == -1)
+        die("epoll_create");
+
+    struct epoll_event event = {
+        .events = EPOLLIN,
+        .data = {
+            .fd = sock,
+        },
+    };
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, sock, &event) == -1)
+        die("epoll_ctl add");
+
+    for (;;) {
+        int count = epoll_wait(epfd, &event, 1, -1);
+        if (count == -1)
+            die("epoll_wait");
+
+        if (count == 0)
+            continue;
+
+        dispatch(epfd, &event);
     }
 
     close(sock);
