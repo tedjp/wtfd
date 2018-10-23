@@ -224,6 +224,12 @@ static void enable_nodelay(int sock) {
         fprintf(stderr, "TCP_NODELAY enabled\n");
 }
 
+static void reuseport(int sock) {
+    const int yes = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes)) == -1)
+        perror("setsockopt(SO_REUSEPORT)");
+}
+
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
@@ -249,12 +255,19 @@ int main(int argc, char *argv[]) {
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
         die("signal(SIGPIPE)");
 
-    // TODO: SO_REUSEPORT a unique socket per child
+    memset(&sin6, 0, sizeof(sin6));
+    sin6.sin6_family = AF_INET6;
+    sin6.sin6_port = htons(portnum);
+    sin6.sin6_addr = in6addr_any;
+
+    multiply();
+
     sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1) 
         die("socket");
 
     reuseaddr(sock);
+    reuseport(sock);
     // This is slightly slower in this case, but probably want to enable it on a
     // real server.
     //enable_defer_accept(sock);
@@ -263,18 +276,11 @@ int main(int argc, char *argv[]) {
     // nodelay reduces throughput too :(
     //enable_nodelay(sock);
 
-    memset(&sin6, 0, sizeof(sin6));
-    sin6.sin6_family = AF_INET6;
-    sin6.sin6_port = htons(portnum);
-    sin6.sin6_addr = in6addr_any;
-
     if (-1 == bind(sock, (struct sockaddr *)&sin6, sizeof(sin6)))
         die("bind");
 
     if (-1 == listen(sock, 1000))
         die("listen");
-
-    multiply();
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
