@@ -1,9 +1,15 @@
-wtfd: wtfd.c
-	gcc -std=gnu11 -Wall -O2 -g -o $@ $<
+COMPILE = gcc -std=gnu11 -Wall -g
 
-all: wtfd
+all: debug wtfd
+
+wtfd: wtfd.c
+	$(COMPILE) -O3 -o $@ $<
+
+debug: wtfd.c
+	$(COMPILE) -O0 -o $@ $<
+
 clean:
-	rm -f wtfd
+	rm -f wtfd debug
 
 install: wtfd
 	mkdir -p $(DESTDIR)/usr/sbin
