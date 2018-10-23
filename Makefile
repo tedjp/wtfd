@@ -1,5 +1,5 @@
 wtfd: wtfd.c
-	gcc -Wall -O2 -g -o $@ $<
+	gcc -std=gnu11 -Wall -O2 -g -o $@ $<
 
 all: wtfd
 clean:
