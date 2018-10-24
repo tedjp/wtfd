@@ -84,6 +84,7 @@ struct job *new_job(int client) {
 struct connection_pool {
     int fds[POOL_SIZE];
     bool in_use[POOL_SIZE];
+    struct addrinfo *addrs;
 };
 
 static void wait_for_connections_to_complete(struct connection_pool *pool) {
@@ -193,9 +194,22 @@ struct connection_pool setup_connection_pool() {
         break;
     }
 
-    freeaddrinfo(addrs);
+    pool.addrs = addrs;
+    // not freeing addrs to allow for connection reopening
 
     return pool;
+}
+
+void pool_replace_socket(struct connection_pool *pool, int oldfd, int newfd) {
+    for (size_t i = 0; i < POOL_SIZE; ++i) {
+        if (pool->fds[i] == oldfd) {
+            pool->fds[i] = newfd;
+            close(oldfd);
+            return;
+        }
+    }
+
+    fprintf(stderr, "Tried to replace unknown fd\n");
 }
 
 int pool_get_fd(struct connection_pool *pool) {
@@ -415,10 +429,41 @@ static void read_client_request(int epfd, struct job *job) {
     state_to_backend_write(epfd, job);
 }
 
+static void add_backend_fd_to_epoll(int epfd, int fd) {
+    struct epoll_event event = {
+        .events = 0,
+        .data = {
+            .u64 = 0,
+        },
+    };
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
+        perror("epoll_ctl _add_backend_host");
+}
+
 static void read_backend_response(int epfd, struct job *job) {
     char resp[4096];
 
     ssize_t len = get_backend_response(job->backend_fd, resp, sizeof(resp));
+
+    if (len == -1) {
+        fprintf(stderr, "Backend was trash; replacing\n");
+        unsubscribe(epfd, job->backend_fd);
+        int oldfd = job->backend_fd;
+        int newfd = socket(
+                backend_pool.addrs->ai_family,
+                backend_pool.addrs->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
+                backend_pool.addrs->ai_protocol);
+        // FIXME: check error
+        connect(newfd, backend_pool.addrs->ai_addr, backend_pool.addrs->ai_addrlen);
+        // FIXME: check error
+        pool_replace_socket(&backend_pool, oldfd, newfd);
+        add_backend_fd_to_epoll(epfd, newfd);
+        job->backend_fd = newfd;
+        // resend backend request
+        state_to_backend_write(epfd, job);
+        return;
+    }
 
     // Finished with the backend fd.
     pool_release_fd(&backend_pool, job->backend_fd);
@@ -650,15 +695,7 @@ static void reuseport(int sock) {
 
 static void add_backend_fds_to_epoll(struct connection_pool *pool, int epfd) {
     for (size_t i = 0; i < sizeof(pool->fds) / sizeof(pool->fds[0]); ++i) {
-        struct epoll_event event = {
-            .events = 0,
-            .data = {
-                .u64 = 0,
-            },
-        };
-
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, pool->fds[i], &event) == -1)
-            perror("epoll_ctl _add_backend_host");
+        add_backend_fd_to_epoll(epfd, pool->fds[i]);
     }
 }
 
