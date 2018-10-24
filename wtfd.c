@@ -44,7 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NCPUS 8
+#define NCPUS 1
 
 static void die(const char *cause) __attribute__((noreturn));
 void die(const char *cause) {
@@ -86,11 +86,17 @@ struct cpool_node {
 struct connection_pool {
     struct cpool_node *head;
     struct addrinfo *addrs;
+    unsigned in_use_count, idle_count;
 };
 
 static struct connection_pool backend_pool;
 
 static void setup_connection_pool(struct connection_pool *pool) {
+    pool->in_use_count = 0;
+    pool->idle_count = 0;
+    pool->head = NULL;
+    pool->addrs = NULL;
+
     const struct addrinfo hints = {
         .ai_flags = AI_V4MAPPED | AI_ADDRCONFIG,
         .ai_family = AF_INET6,
@@ -98,7 +104,14 @@ static void setup_connection_pool(struct connection_pool *pool) {
         .ai_protocol = 0,
     };
 
-    int gaierr = getaddrinfo("d-gp2-neildev-1.imovetv.com", "http", &hints, &pool->addrs);
+#if 0
+# define HOST "d-gp2-neildev-1.imovetv.com"
+# define SERVICE "http"
+#else
+# define HOST "localhost"
+# define SERVICE "8080"
+#endif
+    int gaierr = getaddrinfo(HOST, SERVICE, &hints, &pool->addrs);
     if (gaierr) {
         fprintf(stderr, "Failed to resolve backend host: %s\n", gai_strerror(gaierr));
         exit(1);
@@ -131,7 +144,11 @@ static int pool_new_connection(struct connection_pool *pool) {
 }
 
 static int pool_get_fd(struct connection_pool *pool) {
+    ++pool->in_use_count;
+
     if (pool->head != NULL) {
+        --pool->idle_count;
+
         struct cpool_node *n = pool->head;
 
         pool->head = n->next;
@@ -174,6 +191,9 @@ static struct cpool_node *new_pool_node(int fd) {
 }
 
 static void pool_release_fd(struct connection_pool *pool, int fd) {
+    --pool->in_use_count;
+    ++pool->idle_count;
+
     // prepend node to list.
     struct cpool_node *n = new_pool_node(fd);
     n->next = pool->head;
@@ -190,13 +210,17 @@ static void release_backend_fd(int epfd, struct connection_pool *pool, int fd) {
     pool_release_fd(pool, fd);
 }
 
-static void pool_delete_fd(
-        struct connection_pool *pool __attribute__((unused)),
-        int fd __attribute__((unused))
-) {
-    // Nothing to do since live FDs are not tracked.
-    // If we counted connections we could decrement the current connection
-    // count.
+static void pool_delete_fd(struct connection_pool *pool, int fd) {
+    // Figure out whether it was in use or idle
+    for (struct cpool_node *n = pool->head; n != NULL; n = n->next) {
+        if (n->fd == fd) {
+            --pool->idle_count;
+            return;
+        }
+    }
+
+    // fd wasn't in the idle set. Must have been live (likely)
+    --pool->in_use_count;
 }
 
 static void delete_backend_fd(int epfd, struct connection_pool *pool, int fd) {
@@ -236,7 +260,6 @@ static ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
     }
 
     if (len == 0) {
-        fprintf(stderr, "backend connection closed :(\n");
         return -1;
     }
 
@@ -261,6 +284,8 @@ static ssize_t replace_string(char *buf, size_t buflen, size_t bufcap, const cha
         return false;
 
     char *location = memmem(buf, buflen, from, fromlen);
+    if (location == NULL)
+        return false;
 
     const size_t trailer_len = buflen - (location - buf) - fromlen;
 
@@ -380,6 +405,11 @@ static void read_client_request(int epfd, struct job *job) {
         return;
     }
 
+#if 0
+    fprintf(stderr, "INFO: Backend connection pool size: in-use=%u, idle=%u\n",
+            backend_pool.in_use_count, backend_pool.idle_count);
+#endif
+
     state_to_backend_write(epfd, job);
 }
 
@@ -389,7 +419,7 @@ static void read_backend_response(int epfd, struct job *job) {
     ssize_t len = get_backend_response(job->backend_fd, resp, sizeof(resp));
 
     if (len == -1) {
-        fprintf(stderr, "Backend was trash; replacing\n");
+        fprintf(stderr, "Backend fd %d was trash; replacing\n", job->backend_fd);
         delete_backend_fd(epfd, &backend_pool, job->backend_fd);
         job->backend_fd = get_backend_fd(epfd, &backend_pool);
 
@@ -669,7 +699,7 @@ static void reuseport(int sock) {
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
-    const uint16_t portnum = 8080;
+    const uint16_t portnum = 8081;
     struct sigaction sa;
 
     if (-1 == sigemptyset(&sa.sa_mask))
