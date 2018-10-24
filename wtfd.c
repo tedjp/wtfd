@@ -303,7 +303,7 @@ static ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
 }
 
 // Returns new length, or -1 on error
-static ssize_t inject_string(char *buf, size_t buflen, size_t bufcap, const char *from, size_t fromlen, const char *to, size_t tolen) {
+static ssize_t replace_string(char *buf, size_t buflen, size_t bufcap, const char *from, size_t fromlen, const char *to, size_t tolen) {
     if (buflen - fromlen + tolen > bufcap)
         return false;
 
@@ -499,7 +499,7 @@ static void read_backend_response(int epfd, struct job *job) {
     const char to[] = "http://hahaha.com";
     const size_t tolen = sizeof(to) - 1;
 
-    ssize_t new_size = inject_string(resp, len, sizeof(resp), from, fromlen, to, tolen);
+    ssize_t new_size = replace_string(resp, len, sizeof(resp), from, fromlen, to, tolen);
 
     if (new_size == -1) {
         char msg[] = "HTTP/1.1 500 replacement failed\r\n\r\n";
