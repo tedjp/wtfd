@@ -1,4 +1,4 @@
-COMPILE = gcc -std=gnu11 -Wall -g
+COMPILE = gcc -std=gnu11 -Wall -g -fmax-errors=5
 
 all: debug wtfd
 
