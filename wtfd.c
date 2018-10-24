@@ -80,7 +80,7 @@ struct job *new_job(int client) {
 }
 
 // TODO: Change pool to a linked list (pull from head; MRU)
-#define POOL_SIZE 10
+#define POOL_SIZE 100
 struct connection_pool {
     int fds[POOL_SIZE];
     bool in_use[POOL_SIZE];
@@ -252,15 +252,20 @@ ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
         return -1;
     }
 
+    if (len == 0) {
+        fprintf(stderr, "backend connection closed :(\n");
+        return -1;
+    }
+
     // Just use everything that arrived after \r\n\r\n.
     // Obviously this doesn't handle chunked encoding.
-    char *start = memmem(buf, buflen, "\r\n\r\n", 4);
+    char *start = memmem(buf, len, "\r\n\r\n", 4);
     if (start == NULL)
         return -1;
 
     start += 4;
 
-    ssize_t keep_len = buflen - (start - buf);
+    ssize_t keep_len = len - (start - buf);
 
     memmove(buf, start, keep_len);
 
@@ -284,14 +289,6 @@ ssize_t inject_string(char *buf, size_t buflen, size_t bufcap, const char *from,
 
     return buflen - fromlen + tolen;
 }
-
-#if 0
-static const char response[] = "HTTP/1.1 200 OK\n"
-"Content-Type: application/json\n"
-"Content-Length: 15\n"
-"\n"
-"{\"some\":\"json\"}";
-#endif
 
 static void unsubscribe(int epfd, int fd) {
     if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL) == -1)
@@ -343,25 +340,25 @@ static void notify_when_writable(int epfd, struct job *job, int fd) {
 }
 
 static void state_to_client_read(int epfd, struct job *job) {
-    fprintf(stderr, "New state: client read\n");
+    //fprintf(stderr, "New state: client read\n");
     job->state = FRONTEND_READ_WAIT;
     notify_when_readable(epfd, job, job->client_fd);
 }
 
 static void state_to_backend_write(int epfd, struct job *job) {
-    fprintf(stderr, "New state: backend write\n");
+    //fprintf(stderr, "New state: backend write\n");
     job->state = BACKEND_WRITE_WAIT;
     notify_when_writable(epfd, job, job->backend_fd);
 }
 
 static void state_to_backend_read(int epfd, struct job *job) {
-    fprintf(stderr, "New state: backend read\n");
+    //fprintf(stderr, "New state: backend read\n");
     job->state = BACKEND_READ_WAIT;
     notify_when_readable(epfd, job, job->backend_fd);
 }
 
 static void state_to_client_write(int epfd, struct job *job) {
-    fprintf(stderr, "New state: client write\n");
+    //fprintf(stderr, "New state: client write\n");
     job->state = FRONTEND_WRITE_WAIT;
     notify_when_writable(epfd, job, job->client_fd);
 }
@@ -374,9 +371,13 @@ static void read_client_request(int epfd, struct job *job) {
     // Drain receive buffer
     char buf[4096];
 
-    ssize_t len;
-    while ((len = recv(client, buf, sizeof(buf), 0)) == sizeof(buf))
-        ;
+    ssize_t len = recv(client, buf, sizeof(buf), 0);
+    if (len == sizeof(buf)) {
+        // TODO: Append incoming request if it's larger than 4 kiB.
+        fprintf(stderr, "Client request too big");
+        unsubscribe_and_close(epfd, client);
+        return;
+    }
 
     if (len == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
         perror("recv");
@@ -384,11 +385,23 @@ static void read_client_request(int epfd, struct job *job) {
         return;
     }
 
+    if (len == 0) {
+        unsubscribe_and_close(epfd, client);
+        return;
+    }
+
+    if (len > 0 && memmem(buf, len, "\r\n\r\n", 4) == NULL) {
+        // FIXME: If the end of the request spans the edge of the buffer we
+        // won't catch it.
+        state_to_client_read(epfd, job);
+        return;
+    }
+
     // Grab a backend connection
     job->backend_fd = pool_get_fd(&backend_pool);
-    // FIXME: Add a new BACKEND_POOL_WAIT state and push this job onto the wait
-    // queue
     if (job->backend_fd == -1) {
+        // FIXME: Add a new BACKEND_POOL_WAIT state and push this job onto the wait
+        // queue
         fprintf(stderr, "Failed to get a backend connection; probably oversubscribed\n");
 
         // TODO: Care about errors
@@ -446,9 +459,38 @@ static void read_backend_response(int epfd, struct job *job) {
     state_to_client_write(epfd, job);
 }
 
+static ssize_t get_header(char *buf, size_t buflen, size_t content_length) {
+    int len = snprintf(buf, buflen,
+            "HTTP/1.1 200 OK\r\n"
+            "Server: Proxymoron\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n", content_length);
+
+    if (len == buflen)
+        return -1; // truncated string
+
+    return len;
+}
+
 static void write_client_response(int epfd, struct job *job) {
-    if (send(job->client_fd, job->body, job->body_len, MSG_DONTWAIT) != job->body_len)
+    // XXX: If NODELAY is enabled, it'd be worth setting TCP_CORK until the
+    // entire response is written.
+    char buf[4096];
+    ssize_t len = get_header(buf, sizeof(buf), job->body_len);
+    if (!len) {
+        char msg[] = "HTTP/1.1 500 Failed to render header\r\n\r\n";
+        send(job->client_fd, msg, sizeof(msg) - 1, MSG_DONTWAIT);
+        state_to_client_read(epfd, job);
+        return;
+    }
+
+    if (send(job->client_fd, buf, len, MSG_DONTWAIT) != len)
+        perror("send header");
+
+    if (send(job->client_fd, job->body, job->body_len, MSG_DONTWAIT) != job->body_len) {
         perror("send to client");
+        // FIXME: If the response was big, it might take multiple sends.
+    }
 
     free(job->body);
     job->body = NULL;
@@ -568,6 +610,7 @@ static void reuseaddr(int sock) {
         perror("setsockopt SO_REUSEADDR");
 }
 
+__attribute__((unused))
 static void enable_defer_accept(int sock) {
 #if defined (TCP_DEFER_ACCEPT)
     const int seconds = 2;
@@ -590,6 +633,7 @@ static void enable_fastopen(int sock) {
 #endif
 }
 
+__attribute__((unused))
 static void enable_nodelay(int sock) {
     const int yes = 1;
     if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == -1)
