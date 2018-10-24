@@ -252,9 +252,10 @@ static void pool_release_fd(struct connection_pool *pool, int fd) {
 }
 
 static bool send_backend_get(int fd) {
-    const char req[] = "GET /test.json HTTP/1.1\n"
-        "Host: d-gp2-neildev-1.imovetv.com\n"
-        "\n";
+    const char req[] = "GET /test.json HTTP/1.1\r\n"
+        "Host: d-gp2-neildev-1.imovetv.com\r\n"
+        "User-Agent: Proxymoron\r\n"
+        "\r\n";
 
     ssize_t len = send(fd, req, sizeof(req) - 1, MSG_DONTWAIT);
     if (len == -1) {
@@ -525,6 +526,7 @@ static ssize_t get_header(char *buf, size_t buflen, size_t content_length) {
     int len = snprintf(buf, buflen,
             "HTTP/1.1 200 OK\r\n"
             "Server: Proxymoron\r\n"
+            "Content-Type: application/json\r\n"
             "Content-Length: %zu\r\n"
             "\r\n", content_length);
 
