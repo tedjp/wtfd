@@ -44,8 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-//#define NCPUS 8
-#define NCPUS 1
+#define NCPUS 8
 
 static void die(const char *cause) __attribute__((noreturn));
 void die(const char *cause) {
@@ -65,7 +64,7 @@ struct job {
     size_t body_len;
 };
 
-struct job *new_job(int client) {
+static struct job *new_job(int client) {
     struct job *j = calloc(sizeof(*j), 1);
     if (j == NULL)
         return NULL;
@@ -137,7 +136,7 @@ static void wait_for_connections_to_complete(struct connection_pool *pool) {
 
 static struct connection_pool backend_pool;
 
-struct connection_pool setup_connection_pool() {
+static struct connection_pool setup_connection_pool() {
     const struct addrinfo hints = {
         .ai_flags = AI_V4MAPPED | AI_ADDRCONFIG,
         .ai_family = AF_INET6,
@@ -200,7 +199,7 @@ struct connection_pool setup_connection_pool() {
     return pool;
 }
 
-void pool_replace_socket(struct connection_pool *pool, int oldfd, int newfd) {
+static void pool_replace_socket(struct connection_pool *pool, int oldfd, int newfd) {
     for (size_t i = 0; i < POOL_SIZE; ++i) {
         if (pool->fds[i] == oldfd) {
             pool->fds[i] = newfd;
@@ -212,7 +211,7 @@ void pool_replace_socket(struct connection_pool *pool, int oldfd, int newfd) {
     fprintf(stderr, "Tried to replace unknown fd\n");
 }
 
-int pool_get_fd(struct connection_pool *pool) {
+static int pool_get_fd(struct connection_pool *pool) {
     for (size_t i = 0; i < POOL_SIZE; ++i) {
         if (pool->fds[i] != -1 && pool->in_use[i] == false) {
             pool->in_use[i] = true;
@@ -223,7 +222,23 @@ int pool_get_fd(struct connection_pool *pool) {
     return -1; // no FDs available
 }
 
-void pool_release_fd(struct connection_pool *pool, int fd) {
+static void pool_close_and_remove_fd(struct connection_pool *pool, int fd) {
+    // TODO: Reconnect. (Easier when moved to linked list)
+    for (size_t i = 0; i < POOL_SIZE; ++i) {
+        if (pool->fds[i] == fd) {
+            assert(pool->in_use[i] == true);
+            close(fd);
+            // just blacklist it for now
+            pool->fds[i] = -1;
+            pool->in_use[i] = false;
+            return;
+        }
+    }
+
+    fprintf(stderr, "Tried to remove unknown fd\n");
+}
+
+static void pool_release_fd(struct connection_pool *pool, int fd) {
     for (size_t i = 0; i < POOL_SIZE; ++i) {
         if (pool->fds[i] == fd) {
             assert(pool->in_use[i] == true);
@@ -236,7 +251,7 @@ void pool_release_fd(struct connection_pool *pool, int fd) {
     exit(3);
 }
 
-bool send_backend_get(int fd) {
+static bool send_backend_get(int fd) {
     const char req[] = "GET /test.json HTTP/1.1\n"
         "Host: d-gp2-neildev-1.imovetv.com\n"
         "\n";
@@ -259,7 +274,7 @@ bool send_backend_get(int fd) {
     return true;
 }
 
-ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
+static ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
     ssize_t len = recv(fd, buf, buflen, 0);
     if (len == -1) {
         perror("backend recv");
@@ -287,7 +302,7 @@ ssize_t get_backend_response(int fd, char *buf, size_t buflen) {
 }
 
 // Returns new length, or -1 on error
-ssize_t inject_string(char *buf, size_t buflen, size_t bufcap, const char *from, size_t fromlen, const char *to, size_t tolen) {
+static ssize_t inject_string(char *buf, size_t buflen, size_t bufcap, const char *from, size_t fromlen, const char *to, size_t tolen) {
     if (buflen - fromlen + tolen > bufcap)
         return false;
 
@@ -380,8 +395,6 @@ static void state_to_client_write(int epfd, struct job *job) {
 static void read_client_request(int epfd, struct job *job) {
     int client = job->client_fd;
 
-    // TODO: Ensure we got the end of the request before doing backend work.
-
     // Drain receive buffer
     char buf[4096];
 
@@ -465,6 +478,10 @@ static void read_backend_response(int epfd, struct job *job) {
         return;
     }
 
+    // TODO: If the response contained "Connection: close", close it and
+    // prepare a replacement connection, but don't throw away the response
+    // that we got.
+
     // Finished with the backend fd.
     pool_release_fd(&backend_pool, job->backend_fd);
     job->backend_fd = -1;
@@ -544,6 +561,29 @@ static void write_client_response(int epfd, struct job *job) {
     state_to_client_read(epfd, job);
 }
 
+static void close_client(int epfd, struct job *job) {
+    unsubscribe_and_close(epfd, job->client_fd);
+    if (job->backend_fd != -1) {
+        // Kill the backend connection, it's the only way to cancel the
+        // request in HTTP/1.1. Waiting for it and draining it is a waste
+        // of time (potentially bigger).
+        unsubscribe(epfd, job->backend_fd);
+        pool_close_and_remove_fd(&backend_pool, job->backend_fd);
+        job->backend_fd = -1;
+    }
+}
+
+static void drain_maybe_close(int fd, int epfd, struct job *job) {
+    char buf[4096];
+    ssize_t len;
+    while ((len = recv(fd, buf, sizeof(buf), MSG_DONTWAIT)) > 0)
+        ;
+
+    if (len == 0) {
+        close_client(epfd, job);
+    }
+}
+
 static void read_event(int epfd, const struct epoll_event *event) {
     struct job *job = event->data.ptr;
 
@@ -555,7 +595,12 @@ static void read_event(int epfd, const struct epoll_event *event) {
         read_backend_response(epfd, job);
         break;
     default:
-        fprintf(stderr, "client sent data but not in read state\n");
+        fprintf(stderr, "incoming data available but none expected, client fd %d, backend fd %d\n", job->client_fd, job->backend_fd);
+        drain_maybe_close(job->client_fd, epfd, job);
+#if 0 // TODO: If it's the backend socket, kill it off.
+        if (job->backend_fd != -1)
+            drain(job->backend_fd);
+#endif
     }
 }
 
@@ -621,7 +666,7 @@ static void new_client(int epfd, const struct epoll_event *event) {
 
 static void dispatch(int epfd, const struct epoll_event *event, int listensock) {
     if (event->events & EPOLLHUP) {
-        unsubscribe_and_close(epfd, event->data.fd);
+        close_client(epfd, event->data.ptr);
         return;
     }
 
