@@ -65,7 +65,7 @@ struct job {
 };
 
 static struct job *new_job(int client) {
-    struct job *j = calloc(sizeof(*j), 1);
+    struct job *j = calloc(1, sizeof(*j));
     if (j == NULL)
         return NULL;
 
@@ -78,65 +78,19 @@ static struct job *new_job(int client) {
     return j;
 }
 
-// TODO: Change pool to a linked list (pull from head; MRU)
-#define POOL_SIZE 100
+struct cpool_node {
+    int fd;
+    struct cpool_node *next;
+};
+
 struct connection_pool {
-    int fds[POOL_SIZE];
-    bool in_use[POOL_SIZE];
+    struct cpool_node *head;
     struct addrinfo *addrs;
 };
 
-static void wait_for_connections_to_complete(struct connection_pool *pool) {
-    int cp_epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (cp_epfd == -1)
-        die("epoll_create1");
-
-    struct epoll_event event = {
-        .events = EPOLLOUT,
-        .data = {
-            .u64 = 0,
-        },
-    };
-
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (epoll_ctl(cp_epfd, EPOLL_CTL_ADD, pool->fds[i], &event) == -1)
-            die("epoll_ctl add");
-    }
-
-    struct epoll_event events[POOL_SIZE];
-    static const int CONNECT_TIMEOUT_MS = 5000;
-
-    unsigned completed_connections = 0;
-
-    struct timespec start_time;
-    clock_gettime(CLOCK_MONOTONIC, &start_time); // FIXME: check return
-
-    for (;;) {
-        // FIXME: Need to reduce the timeout by the elapsed time.
-        ssize_t count = epoll_wait(cp_epfd, events, sizeof(events) / sizeof(events[0]), CONNECT_TIMEOUT_MS);
-
-        // FIXME: iterate over each to check whether they are good or error
-        completed_connections += count;
-
-        if (completed_connections >= sizeof(pool->fds) / sizeof(pool->fds[0]))
-            break; // all good
-
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now); // FIXME: Check return
-        if (now.tv_sec - 4 > start_time.tv_sec) {
-            fprintf(stderr, "backend connections took too long\n");
-            exit(1);
-        }
-    }
-
-    fprintf(stderr, "Backend connection pool ready\n");
-
-    close(cp_epfd);
-}
-
 static struct connection_pool backend_pool;
 
-static struct connection_pool setup_connection_pool() {
+static void setup_connection_pool(struct connection_pool *pool) {
     const struct addrinfo hints = {
         .ai_flags = AI_V4MAPPED | AI_ADDRCONFIG,
         .ai_family = AF_INET6,
@@ -144,111 +98,110 @@ static struct connection_pool setup_connection_pool() {
         .ai_protocol = 0,
     };
 
-    struct addrinfo *addrs = NULL;
-
-    int gaierr = getaddrinfo("d-gp2-neildev-1.imovetv.com", "http", &hints, &addrs);
+    int gaierr = getaddrinfo("d-gp2-neildev-1.imovetv.com", "http", &hints, &pool->addrs);
     if (gaierr) {
         fprintf(stderr, "Failed to resolve backend host: %s\n", gai_strerror(gaierr));
         exit(1);
     }
 
-    if (addrs == NULL) {
+    if (pool->addrs == NULL) {
         fprintf(stderr, "No addresses\n");
         exit(1);
     }
-
-    struct connection_pool pool;
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        pool.fds[i] = -1;
-        pool.in_use[i] = false;
-    }
-
-    for (struct addrinfo *addr = addrs; addr != NULL; addr = addr->ai_next) {
-        int fd = socket(addr->ai_family, addr->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, addr->ai_protocol);
-        if (fd == -1)
-            die("connection pool socket");
-
-        if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1 && errno != EINPROGRESS) {
-            fprintf(stderr, "Failed to connect to backend address (not fatal): %s\n", strerror(errno));
-            close(fd);
-            continue;
-        }
-
-        // Connect probably worked; repeat!
-        pool.fds[0] = fd;
-
-        for (size_t i = 1; i < POOL_SIZE; ++i) {
-            // FIXME: copypasta of above
-            if ((pool.fds[i] = socket(addr->ai_family, addr->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, addr->ai_protocol)) == -1) {
-                die("pool socket");
-            }
-
-            if (connect(pool.fds[i], addr->ai_addr, addr->ai_addrlen) == -1 && errno != EINPROGRESS) {
-                die("pool connect failed");
-            }
-        }
-
-        wait_for_connections_to_complete(&pool);
-
-        break;
-    }
-
-    pool.addrs = addrs;
-    // not freeing addrs to allow for connection reopening
-
-    return pool;
 }
 
-static void pool_replace_socket(struct connection_pool *pool, int oldfd, int newfd) {
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (pool->fds[i] == oldfd) {
-            pool->fds[i] = newfd;
-            close(oldfd);
-            return;
-        }
+static int pool_new_connection(struct connection_pool *pool) {
+    // FIXME: Iterate over addresses
+    // (a little tricker with non-blocking connect)
+    struct addrinfo *addr = pool->addrs;
+
+    int sock = socket(addr->ai_family, addr->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, addr->ai_protocol);
+    if (sock == -1) {
+        perror("Failed to allocate connection pool socket\n");
+        return -1;
     }
 
-    fprintf(stderr, "Tried to replace unknown fd\n");
+    if (connect(sock, addr->ai_addr, addr->ai_addrlen) == -1 && errno != EINPROGRESS) {
+        perror("Failed to connect to backend");
+        close(sock);
+        return -1;
+    }
+
+    return sock;
 }
 
 static int pool_get_fd(struct connection_pool *pool) {
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (pool->fds[i] != -1 && pool->in_use[i] == false) {
-            pool->in_use[i] = true;
-            return pool->fds[i];
-        }
+    if (pool->head != NULL) {
+        struct cpool_node *n = pool->head;
+
+        pool->head = n->next;
+
+        int fd = n->fd;
+        free(n);
+        return fd;
     }
 
-    return -1; // no FDs available
+    return pool_new_connection(pool);
 }
 
-static void pool_close_and_remove_fd(struct connection_pool *pool, int fd) {
-    // TODO: Reconnect. (Easier when moved to linked list)
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (pool->fds[i] == fd) {
-            assert(pool->in_use[i] == true);
-            close(fd);
-            // just blacklist it for now
-            pool->fds[i] = -1;
-            pool->in_use[i] = false;
-            return;
-        }
-    }
+static void subscribe(int epfd, int fd) {
+    struct epoll_event event = {
+        .events = 0,
+        .data = {
+            .u64 = 0,
+        },
+    };
 
-    fprintf(stderr, "Tried to remove unknown fd\n");
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
+        die("epoll_ctl subscribe");
+}
+
+static int get_backend_fd(int epfd, struct connection_pool *pool) {
+    int fd = pool_get_fd(pool);
+    if (fd == -1)
+        return -1;
+
+    subscribe(epfd, fd);
+
+    return fd;
+}
+
+static struct cpool_node *new_pool_node(int fd) {
+    struct cpool_node *n = calloc(1, sizeof(*n));
+    n->fd = fd;
+    n->next = NULL;
+    return n;
 }
 
 static void pool_release_fd(struct connection_pool *pool, int fd) {
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (pool->fds[i] == fd) {
-            assert(pool->in_use[i] == true);
-            pool->in_use[i] = false;
-            return;
-        }
-    }
+    // prepend node to list.
+    struct cpool_node *n = new_pool_node(fd);
+    n->next = pool->head;
+    pool->head = n;
+}
 
-    fprintf(stderr, "fd not found\n");
-    exit(3);
+static void unsubscribe(int epfd, int fd) {
+    if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL) == -1)
+        perror("epoll_ctl DEL");
+}
+
+static void release_backend_fd(int epfd, struct connection_pool *pool, int fd) {
+    unsubscribe(epfd, fd);
+    pool_release_fd(pool, fd);
+}
+
+static void pool_delete_fd(
+        struct connection_pool *pool __attribute__((unused)),
+        int fd __attribute__((unused))
+) {
+    // Nothing to do since live FDs are not tracked.
+    // If we counted connections we could decrement the current connection
+    // count.
+}
+
+static void delete_backend_fd(int epfd, struct connection_pool *pool, int fd) {
+    unsubscribe(epfd, fd);
+    pool_delete_fd(pool, fd);
 }
 
 static bool send_backend_get(int fd) {
@@ -320,11 +273,6 @@ static ssize_t replace_string(char *buf, size_t buflen, size_t bufcap, const cha
     return buflen - fromlen + tolen;
 }
 
-static void unsubscribe(int epfd, int fd) {
-    if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL) == -1)
-        perror("epoll_ctl DEL");
-}
-
 static void unsubscribe_and_close(int epfd, int fd) {
     unsubscribe(epfd, fd);
 
@@ -336,10 +284,8 @@ static void close_job(int epfd, struct job *job) {
     if (job->client_fd != -1)
         unsubscribe_and_close(epfd, job->client_fd);
 
-    if (job->backend_fd != -1) {
-        unsubscribe(epfd, job->backend_fd);
-        pool_release_fd(&backend_pool, job->backend_fd);
-    }
+    if (job->backend_fd != -1)
+        release_backend_fd(epfd, &backend_pool, job->backend_fd);
 
     free(job);
 }
@@ -426,33 +372,15 @@ static void read_client_request(int epfd, struct job *job) {
     }
 
     // Grab a backend connection
-    job->backend_fd = pool_get_fd(&backend_pool);
+    job->backend_fd = get_backend_fd(epfd, &backend_pool);
     if (job->backend_fd == -1) {
-        // FIXME: Add a new BACKEND_POOL_WAIT state and push this job onto the wait
-        // queue
-        fprintf(stderr, "Failed to get a backend connection; probably oversubscribed\n");
-
-        // TODO: Care about errors
-        // (this could drop data if the buffer is full but NBD)
-        const char msg[] = "HTTP/1.1 503 Server Overloaded - no backend connections available";
+        const char msg[] = "HTTP/1.1 503 Backend Unavailable";
         send(job->client_fd, msg, sizeof(msg) - 1, MSG_DONTWAIT);
         state_to_client_read(epfd, job);
         return;
     }
 
     state_to_backend_write(epfd, job);
-}
-
-static void add_backend_fd_to_epoll(int epfd, int fd) {
-    struct epoll_event event = {
-        .events = 0,
-        .data = {
-            .u64 = 0,
-        },
-    };
-
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
-        perror("epoll_ctl _add_backend_host");
 }
 
 static void read_backend_response(int epfd, struct job *job) {
@@ -462,18 +390,16 @@ static void read_backend_response(int epfd, struct job *job) {
 
     if (len == -1) {
         fprintf(stderr, "Backend was trash; replacing\n");
-        unsubscribe(epfd, job->backend_fd);
-        int oldfd = job->backend_fd;
-        int newfd = socket(
-                backend_pool.addrs->ai_family,
-                backend_pool.addrs->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
-                backend_pool.addrs->ai_protocol);
-        // FIXME: check error
-        connect(newfd, backend_pool.addrs->ai_addr, backend_pool.addrs->ai_addrlen);
-        // FIXME: check error
-        pool_replace_socket(&backend_pool, oldfd, newfd);
-        add_backend_fd_to_epoll(epfd, newfd);
-        job->backend_fd = newfd;
+        delete_backend_fd(epfd, &backend_pool, job->backend_fd);
+        job->backend_fd = get_backend_fd(epfd, &backend_pool);
+
+        if (job->backend_fd == -1) {
+            char msg[] = "HTTP/1.1 503 Backend unavailable\r\n\r\n";
+            send(job->client_fd, msg, sizeof(msg) - 1, MSG_DONTWAIT);
+            state_to_client_read(epfd, job);
+            return;
+        }
+
         // resend backend request
         state_to_backend_write(epfd, job);
         return;
@@ -484,7 +410,7 @@ static void read_backend_response(int epfd, struct job *job) {
     // that we got.
 
     // Finished with the backend fd.
-    pool_release_fd(&backend_pool, job->backend_fd);
+    release_backend_fd(epfd, &backend_pool, job->backend_fd);
     job->backend_fd = -1;
 
     if (len == -1) {
@@ -569,8 +495,8 @@ static void close_client(int epfd, struct job *job) {
         // Kill the backend connection, it's the only way to cancel the
         // request in HTTP/1.1. Waiting for it and draining it is a waste
         // of time (potentially bigger).
-        unsubscribe(epfd, job->backend_fd);
-        pool_close_and_remove_fd(&backend_pool, job->backend_fd);
+        delete_backend_fd(epfd, &backend_pool, job->backend_fd);
+        close(job->backend_fd);
         job->backend_fd = -1;
     }
 }
@@ -740,12 +666,6 @@ static void reuseport(int sock) {
         perror("setsockopt(SO_REUSEPORT)");
 }
 
-static void add_backend_fds_to_epoll(struct connection_pool *pool, int epfd) {
-    for (size_t i = 0; i < sizeof(pool->fds) / sizeof(pool->fds[0]); ++i) {
-        add_backend_fd_to_epoll(epfd, pool->fds[i]);
-    }
-}
-
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
@@ -816,9 +736,7 @@ int main(int argc, char *argv[]) {
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, sock, &event) == -1)
         die("epoll_ctl add");
 
-    backend_pool = setup_connection_pool();
-
-    add_backend_fds_to_epoll(&backend_pool, epfd);
+    setup_connection_pool(&backend_pool);
 
     for (;;) {
         struct epoll_event events[10];
