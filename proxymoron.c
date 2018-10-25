@@ -205,6 +205,14 @@ static void release_backend_fd(int epfd, struct connection_pool *pool, int fd) {
     pool_release_fd(pool, fd);
 }
 
+// Optimized version of pool_delete_fd if the caller knows that the file was not
+// on the idle list.
+static void pool_delete_active_fd(struct connection_pool *pool, int fd __attribute__((unused))) {
+    --pool->in_use_count;
+}
+
+// Prefer pool_delete_active_fd() if possible
+__attribute__((unused))
 static void pool_delete_fd(struct connection_pool *pool, int fd) {
     // Figure out whether it was in use or idle
     for (struct cpool_node *n = pool->head; n != NULL; n = n->next) {
@@ -214,13 +222,12 @@ static void pool_delete_fd(struct connection_pool *pool, int fd) {
         }
     }
 
-    // fd wasn't in the idle set. Must have been live (likely)
-    --pool->in_use_count;
+    pool_delete_active_fd(pool, fd);
 }
 
 static void delete_backend_fd(int epfd, struct connection_pool *pool, int fd) {
     unsubscribe(epfd, fd);
-    pool_delete_fd(pool, fd);
+    pool_delete_active_fd(pool, fd);
 }
 
 static bool send_backend_get(int fd) {
