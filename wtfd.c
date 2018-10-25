@@ -45,6 +45,7 @@
 #include <unistd.h>
 
 #define NCPUS 1
+#define PORT_NUMBER 8081
 
 static void die(const char *cause) __attribute__((noreturn));
 void die(const char *cause) {
@@ -647,13 +648,6 @@ static void multiply() {
     }
 }
 
-static void reuseaddr(int sock) {
-    const int yes = 1;
-
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1)
-        perror("setsockopt SO_REUSEADDR");
-}
-
 __attribute__((unused))
 static void enable_defer_accept(int sock) {
 #if defined (TCP_DEFER_ACCEPT)
@@ -692,40 +686,50 @@ static void reuseport(int sock) {
         perror("setsockopt(SO_REUSEPORT)");
 }
 
-int main(int argc, char *argv[]) {
-    int sock;
-    struct sockaddr_in6 sin6;
-    const uint16_t portnum = 8081;
-
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
-        die("signal(SIGPIPE)");
-
-    memset(&sin6, 0, sizeof(sin6));
-    sin6.sin6_family = AF_INET6;
-    sin6.sin6_port = htons(portnum);
-    sin6.sin6_addr = in6addr_any;
-
-    multiply();
-
-    sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+static int server_socket(void) {
+    int sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1)
         die("socket");
 
-    reuseaddr(sock);
     reuseport(sock);
-    // This is slightly slower in this case, but probably want to enable it on a
-    // real server.
-    //enable_defer_accept(sock);
-    // wrk doesn't seem to use fastopen, but support it anyway.
-    enable_fastopen(sock);
-    // nodelay reduces throughput too :(
-    //enable_nodelay(sock);
 
-    if (-1 == bind(sock, (struct sockaddr *)&sin6, sizeof(sin6)))
+    const struct sockaddr_in6 bind_addr = {
+        .sin6_family = AF_INET6,
+        .sin6_port = htons(PORT_NUMBER),
+        .sin6_flowinfo = 0,
+        .sin6_addr = in6addr_any,
+        .sin6_scope_id = 0,
+    };
+
+    if (bind(sock, (const struct sockaddr*)&bind_addr, sizeof(bind_addr)) == -1)
         die("bind");
 
-    if (-1 == listen(sock, 1000))
+    // This is slightly slower in this case, but probably want to enable it on a
+    // real server. Might be faster once we do an immediate read on a new
+    // socket.
+    //enable_defer_accept(sock);
+    // nodelay seems to reduce throughput. leave it off for now.
+    //enable_nodelay(sock);
+
+    enable_fastopen(sock);
+
+    if (listen(sock, 1000) == -1)
         die("listen");
+
+    return sock;
+}
+
+static void quiesce_signals(void) {
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+        die("signal(SIGPIPE)");
+}
+
+int main(int argc, char *argv[]) {
+    quiesce_signals();
+
+    multiply();
+
+    int sock = server_socket();
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
