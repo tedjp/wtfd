@@ -46,6 +46,9 @@
 #include <unistd.h>
 
 #define PORT_NUMBER 8081
+// Define to a number of processes to run.
+// If undefined, automatically uses all CPUs.
+#define NCPUS 1
 
 static void die(const char *cause) __attribute__((noreturn));
 void die(const char *cause) {
@@ -649,7 +652,13 @@ static void dispatch(int epfd, const struct epoll_event *event, int listensock) 
 }
 
 static void multiply() {
-    int ncpus = get_nprocs_conf();
+    int ncpus;
+
+#if defined(NCPUS)
+    ncpus = NCPUS;
+#else
+    ncpus = get_nprocs_conf();
+#endif
 
     fprintf(stderr, "Using %d processes\n", ncpus);
 
