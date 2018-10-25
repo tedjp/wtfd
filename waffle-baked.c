@@ -51,10 +51,10 @@ static void signull(int signum) {
     /* The sound of silence. */
 }
 
-static const char response[] = "HTTP/1.1 200 OK\n"
-"Content-Type: application/json\n"
-"Content-Length: 48\n"
-"\n"
+static const char response[] = "HTTP/1.1 200 OK\r\n"
+"Content-Type: application/json\r\n"
+"Content-Length: 48\r\n"
+"\r\n"
 "{\"waffle\": {\"baked\": \"http://watch.sling.com\"}}\n";
 
 static void unsubscribe(int epfd, int fd) {
