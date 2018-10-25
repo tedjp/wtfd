@@ -375,7 +375,12 @@ static void read_client_request(int epfd, struct job *job) {
         return;
     }
 
-    if (len == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    if (len == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            state_to_client_read(epfd, job);
+            return;
+        }
+
         perror("recv");
         unsubscribe_and_close(epfd, client);
         return;
@@ -601,8 +606,6 @@ static void new_client(int epfd, struct job *listen_job) {
         return;
     }
 
-    // XXX: We could do an immediate read here to take full advantage of TCP_FASTOPEN's payload
-
     struct epoll_event revent = {
         .events = EPOLLIN,
         .data = {
@@ -615,6 +618,10 @@ static void new_client(int epfd, struct job *listen_job) {
         if (close(client) == -1)
             perror("close");
     }
+
+    // Optimize for TCP_FASTOPEN and/or TCP_DEFER_ACCEPT, wherein data
+    // (a request) will be waiting immediately upon connection receipt.
+    read_client_request(epfd, job);
 }
 
 static void dispatch(int epfd, const struct epoll_event *event, int listensock) {
@@ -711,7 +718,7 @@ static int server_socket(void) {
     // This is slightly slower in this case, but probably want to enable it on a
     // real server. Might be faster once we do an immediate read on a new
     // socket.
-    //enable_defer_accept(sock);
+    enable_defer_accept(sock);
     // nodelay seems to reduce throughput. leave it off for now.
     //enable_nodelay(sock);
 
