@@ -539,9 +539,7 @@ static void drain_maybe_close(int fd, int epfd, struct job *job) {
     }
 }
 
-static void read_event(int epfd, const struct epoll_event *event) {
-    struct job *job = event->data.ptr;
-
+static void read_event(int epfd, struct job *job) {
     switch (job->state) {
     case FRONTEND_READ_WAIT:
         read_client_request(epfd, job);
@@ -582,8 +580,8 @@ static void write_event(int epfd, const struct epoll_event *event) {
     }
 }
 
-static void new_client(int epfd, const struct epoll_event *event) {
-    int client = accept4(event->data.fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+static void new_client(int epfd, struct job *listen_job) {
+    int client = accept4(listen_job->client_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (client == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // other process probably got it.
@@ -626,10 +624,12 @@ static void dispatch(int epfd, const struct epoll_event *event, int listensock) 
     }
 
     if (event->events & EPOLLIN) {
-        if (event->data.fd == listensock)
-            new_client(epfd, event);
+        struct job *job = event->data.ptr;
+
+        if (job->client_fd == listensock)
+            new_client(epfd, job);
         else
-            read_event(epfd, event);
+            read_event(epfd, job);
     }
 
     if (event->events & EPOLLOUT) {
@@ -728,13 +728,7 @@ static void quiesce_signals(void) {
         die("signal(SIGPIPE)");
 }
 
-int main(int argc, char *argv[]) {
-    quiesce_signals();
-
-    multiply();
-
-    int sock = server_socket();
-
+static int setup_epoll_fd(int listen_sock) {
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
         die("epoll_create");
@@ -742,32 +736,60 @@ int main(int argc, char *argv[]) {
     struct epoll_event event = {
         .events = EPOLLIN,
         .data = {
-            .fd = sock,
+            // This is not really a job, of course, but the .data member
+            // needs to be consistent so that the FD is always stored within
+            // a `struct job`.
+            .ptr = new_job(listen_sock),
         },
     };
+
+    if (event.data.ptr == NULL)
+        die("Failed to create epoll wrapper for listen socket");
 
 #if defined(EPOLLEXCLUSIVE)
     event.events |= EPOLLEXCLUSIVE;
 #endif
 
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, sock, &event) == -1)
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, listen_sock, &event) == -1)
         die("epoll_ctl add");
+
+    return epfd;
+}
+
+static void event_loop_iteration(int epfd, int listen_sock) {
+    struct epoll_event events[10];
+
+    int count = epoll_wait(epfd, events, sizeof(events) / sizeof(events[0]), -1);
+
+    if (count == -1)
+        die("epoll_wait");
+
+    if (count == 0)
+        return;
+
+    for (unsigned i = 0; i < count; ++i)
+        dispatch(epfd, &events[i], listen_sock);
+}
+
+static void event_loop(int epfd, int listen_sock) {
+    for (;;)
+        event_loop_iteration(epfd, listen_sock);
+}
+
+int main(int argc, char *argv[]) {
+    quiesce_signals();
+
+    multiply();
+
+    int sock = server_socket();
+
+    int epfd = setup_epoll_fd(sock);
 
     setup_connection_pool(&backend_pool);
 
-    for (;;) {
-        struct epoll_event events[10];
-        int count = epoll_wait(epfd, events, sizeof(events) / sizeof(events[0]), -1);
-        if (count == -1)
-            die("epoll_wait");
+    event_loop(epfd, sock);
 
-        if (count == 0)
-            continue;
-
-        for (unsigned i = 0; i < count; ++i)
-            dispatch(epfd, &events[i], sock);
-    }
-
+    close(epfd);
     close(sock);
 
     return 0;
