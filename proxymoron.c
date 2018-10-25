@@ -104,13 +104,8 @@ static void setup_connection_pool(struct connection_pool *pool) {
         .ai_protocol = 0,
     };
 
-#if 0
-# define HOST "d-gp2-neildev-1.imovetv.com"
-# define SERVICE "http"
-#else
-# define HOST "localhost"
-# define SERVICE "8080"
-#endif
+#define HOST "localhost"
+#define SERVICE "23206"
     int gaierr = getaddrinfo(HOST, SERVICE, &hints, &pool->addrs);
     if (gaierr) {
         fprintf(stderr, "Failed to resolve backend host: %s\n", gai_strerror(gaierr));
@@ -230,7 +225,7 @@ static void delete_backend_fd(int epfd, struct connection_pool *pool, int fd) {
 
 static bool send_backend_get(int fd) {
     const char req[] = "GET /test.json HTTP/1.1\r\n"
-        "Host: d-gp2-neildev-1.imovetv.com\r\n"
+        "Host: localhost\r\n"
         "User-Agent: Proxymoron\r\n"
         "\r\n";
 
