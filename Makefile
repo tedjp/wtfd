@@ -1,18 +1,18 @@
 COMPILE = gcc -std=gnu11 -Wall -g -fmax-errors=5
 
-all: debug wtfd
+all: debug proxymoron
 
-wtfd: wtfd.c
+proxymoron: proxymoron.c
 	$(COMPILE) -O3 -o $@ $<
 
-debug: wtfd.c
+debug: proxymoron.c
 	$(COMPILE) -O0 -o $@ $<
 
 clean:
-	rm -f wtfd debug
+	rm -f proxymoron debug
 
-install: wtfd
+install: proxymoron
 	mkdir -p $(DESTDIR)/usr/sbin
-	cp wtfd $(DESTDIR)/usr/sbin
+	cp $< $(DESTDIR)/usr/sbin
 
 .PHONY: all clean install
