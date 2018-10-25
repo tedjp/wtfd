@@ -37,6 +37,7 @@
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/sysinfo.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -44,7 +45,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NCPUS 1
 #define PORT_NUMBER 8081
 
 static void die(const char *cause) __attribute__((noreturn));
@@ -638,8 +638,12 @@ static void dispatch(int epfd, const struct epoll_event *event, int listensock) 
 }
 
 static void multiply() {
+    int ncpus = get_nprocs_conf();
+
+    fprintf(stderr, "Using %d processes\n", ncpus);
+
     // parent keeps running too
-    for (unsigned i = 1; i < NCPUS; ++i) {
+    for (unsigned i = 1; i < ncpus; ++i) {
         pid_t pid = fork();
         if (pid == -1)
             perror("fork");
