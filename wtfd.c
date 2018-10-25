@@ -606,8 +606,12 @@ static void new_client(int epfd, struct job *listen_job) {
         return;
     }
 
+    // Here we don't want to subscribe to any events because we'll immediately
+    // do a socket read, *then* subscribe to read events (or go straight to
+    // BACKEND_WRITE_WAIT), but we need the client FD to be part of the epoll
+    // set (so we can do a CTL_MOD later).
     struct epoll_event revent = {
-        .events = EPOLLIN,
+        .events = 0 | EPOLLET | EPOLLONESHOT,
         .data = {
             .ptr = job,
         },
