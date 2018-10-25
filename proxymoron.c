@@ -56,13 +56,203 @@ void die(const char *cause) {
     exit(1);
 }
 
+struct streambuf {
+    char *data;
+    size_t len;
+    size_t cap;
+};
+
+struct endpoint {
+    int fd;
+    struct streambuf incoming, outgoing;
+};
+
 struct job {
     enum { FRONTEND_READ_WAIT, BACKEND_WRITE_WAIT, BACKEND_READ_WAIT, FRONTEND_WRITE_WAIT } state;
-    int client_fd;
-    int backend_fd;
-    char *body;
-    size_t body_len;
+    struct endpoint client, backend;
 };
+
+static void streambuf_consume(struct streambuf *streambuf, size_t amount) {
+    assert(amount <= streambuf->len);
+
+    streambuf->len -= amount;
+
+    memmove(streambuf->data, streambuf->data + amount, streambuf->len);
+}
+
+static bool streambuf_init(struct streambuf *streambuf) {
+    streambuf->cap = 4096;
+    streambuf->data = malloc(streambuf->cap);
+    streambuf->len = 0;
+
+    return streambuf->data != NULL ? true : false;
+}
+
+static void streambuf_free_contents(struct streambuf *streambuf) {
+    free(streambuf->data);
+    streambuf->data = NULL;
+    streambuf->len = 0;
+    streambuf->cap = 0;
+}
+
+static bool endpoint_init(struct endpoint *ep) {
+    ep->fd = -1;
+
+    if (streambuf_init(&ep->incoming) == false)
+        return false;
+
+    if (streambuf_init(&ep->outgoing) == false) {
+        streambuf_free_contents(&ep->incoming);
+        return false;
+    }
+
+    return true;
+}
+
+static void endpoint_free_contents(struct endpoint *ep) {
+    if (ep->fd != -1) {
+        close(ep->fd);
+        ep->fd = -1;
+    }
+
+    streambuf_free_contents(&ep->incoming);
+    streambuf_free_contents(&ep->outgoing);
+}
+
+static int streambuf_ensure_capacity(struct streambuf *sb, size_t data_len) {
+    if (sb->cap - sb->len >= data_len)
+        return 0;
+
+    if (sb->len == 0) {
+        free(sb->data);
+        sb->data = malloc(data_len);
+        if (sb->data == NULL)
+            return -1;
+        sb->cap = data_len;
+    } else {
+        char *newbuf = realloc(sb->data, sb->len + data_len);
+        if (!newbuf)
+            return -1;
+    }
+
+    return 0;
+}
+
+static ssize_t streambuf_enqueue(struct streambuf *sb, const void *data, size_t data_len) {
+    ssize_t out_len;
+
+    out_len = streambuf_ensure_capacity(sb, data_len);
+    if (out_len < 0)
+        return out_len;
+
+    memcpy(sb->data + sb->len, data, data_len);
+    sb->len += data_len;
+}
+
+// Read as much data as possible into a streambuf from a file descriptor.
+// Return values the same as recv().
+// limit parameter is the maximum amount of outstanding data that will be
+// buffered before returning, or -1 for no limit.
+// (Combining a limit with edge-triggered polling is likely to cause your end
+// of a connection to hang; you'd better use level-triggering or close the
+// connection if it exceeds your limit.)
+static ssize_t streambuf_recv(struct streambuf *sb, int fd, ssize_t limit) {
+    ssize_t total_received = 0;
+    ssize_t len;
+    size_t available;
+
+    do {
+        size_t new_capacity;
+
+        if (sb->cap < 4096)
+            new_capacity = 4096;
+        else
+            new_capacity = sb->cap * 2;
+
+        if (streambuf_ensure_capacity(sb, new_capacity) < 0)
+            return -1;
+
+        available = sb->cap - sb->len;
+
+        if (limit != -1 && available > limit)
+            available = limit;
+
+        len = recv(fd, sb->data + sb->len, available, 0);
+        if (len <= 0) {
+            if (total_received > 0)
+                return total_received;
+            return len;
+        }
+
+        sb->len += len;
+        total_received += len;
+
+        if (limit != -1 && sb->len >= limit)
+            break;
+    } while (len == available);
+
+    return total_received;
+}
+
+// Like send(2), but queues data if it cannot be sent immediately.
+// Return values are as for send(2):
+// Returns -1 on fatal error (eg. EBADF, ENOMEM)
+// Returns >0 if data were successfully sent or queued;
+// the return value is always data_len in this case.
+// Returns 0 if the socket is closed on the remote end (?)
+static ssize_t endpoint_send(struct endpoint *ep, const void *data, size_t data_len) {
+    if (ep->outgoing.len > 0)
+        return streambuf_enqueue(&ep->outgoing, data, data_len);
+
+    // Attempt immediate send
+    ssize_t sent_len = send(ep->fd, data, data_len, 0);
+    if (sent_len < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return streambuf_enqueue(&ep->outgoing, data, data_len);
+
+        return sent_len; // error
+    }
+
+    if (sent_len == 0)
+        return 0;
+
+    if (sent_len < data_len)
+        streambuf_enqueue(&ep->outgoing, data + sent_len, data_len - sent_len);
+
+    return data_len;
+}
+
+static ssize_t endpoint_recv(struct endpoint *ep, ssize_t limit) {
+    return streambuf_recv(&ep->incoming, ep->fd, limit);
+}
+
+static int job_send_status(struct job *job, int code, const char *msg) {
+    char buf[512];
+    ssize_t len = snprintf(buf, sizeof(buf), "HTTP/1.1 %d %s\r\n", code, msg);
+    if (len < 0 || endpoint_send(&job->client, buf, len) == -1)
+        return -1;
+
+    return 0;
+}
+
+static int job_terminate_headers(struct job *job) {
+    char term[2] = { '\r', '\n' };
+
+    if (endpoint_send(&job->client, term, sizeof(term)) == -1)
+        return -1;
+
+    return 0;
+}
+
+static int job_respond_status_only(struct job *job, int code, const char *msg) {
+    if (job_send_status(job, code, msg) == -1)
+        return -1;
+
+    if (job_terminate_headers(job) == -1)
+        return -1;
+
+    return 0;
+}
 
 static struct job *new_job(int client) {
     struct job *j = calloc(1, sizeof(*j));
@@ -70,12 +260,26 @@ static struct job *new_job(int client) {
         return NULL;
 
     j->state = FRONTEND_READ_WAIT;
-    j->client_fd = client;
-    j->backend_fd = -1;
-    j->body = NULL;
-    j->body_len = 0;
+    if (endpoint_init(&j->client) == false) {
+        free(j);
+        return NULL;
+    }
+    j->client.fd = client;
+    if (endpoint_init(&j->backend) == false) {
+        endpoint_free_contents(&j->client);
+        free(j);
+        return NULL;
+    }
 
     return j;
+}
+
+static void job_close_backend(struct job *job) {
+    endpoint_free_contents(&job->backend);
+}
+
+static void job_close_client(struct job *job) {
+    endpoint_free_contents(&job->client);
 }
 
 struct cpool_node {
@@ -308,11 +512,14 @@ static void unsubscribe_and_close(int epfd, int fd) {
 }
 
 static void close_job(int epfd, struct job *job) {
-    if (job->client_fd != -1)
-        unsubscribe_and_close(epfd, job->client_fd);
+    if (job->client.fd != -1)
+        unsubscribe(epfd, job->client.fd);
 
-    if (job->backend_fd != -1)
-        release_backend_fd(epfd, &backend_pool, job->backend_fd);
+    if (job->backend.fd != -1)
+        unsubscribe(epfd, job->backend.fd);
+
+    endpoint_free_contents(&job->backend);
+    endpoint_free_contents(&job->client);
 
     free(job);
 }
@@ -343,27 +550,23 @@ static void notify_when_writable(int epfd, struct job *job, int fd) {
 }
 
 static void state_to_client_read(int epfd, struct job *job) {
-    //fprintf(stderr, "New state: client read\n");
     job->state = FRONTEND_READ_WAIT;
-    notify_when_readable(epfd, job, job->client_fd);
+    notify_when_readable(epfd, job, job->client.fd);
 }
 
 static void state_to_backend_write(int epfd, struct job *job) {
-    //fprintf(stderr, "New state: backend write\n");
     job->state = BACKEND_WRITE_WAIT;
-    notify_when_writable(epfd, job, job->backend_fd);
+    notify_when_writable(epfd, job, job->backend.fd);
 }
 
 static void state_to_backend_read(int epfd, struct job *job) {
-    //fprintf(stderr, "New state: backend read\n");
     job->state = BACKEND_READ_WAIT;
-    notify_when_readable(epfd, job, job->backend_fd);
+    notify_when_readable(epfd, job, job->backend.fd);
 }
 
 static void state_to_client_write(int epfd, struct job *job) {
-    //fprintf(stderr, "New state: client write\n");
     job->state = FRONTEND_WRITE_WAIT;
-    notify_when_writable(epfd, job, job->client_fd);
+    notify_when_writable(epfd, job, job->client.fd);
 }
 
 static void read_client_request(int epfd, struct job *job) {
