@@ -52,10 +52,6 @@ void die(const char *cause) {
     exit(1);
 }
 
-static void signull(int signum) {
-    /* The sound of silence. */
-}
-
 struct job {
     enum { FRONTEND_READ_WAIT, BACKEND_WRITE_WAIT, BACKEND_READ_WAIT, FRONTEND_WRITE_WAIT } state;
     int client_fd;
@@ -700,23 +696,6 @@ int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
     const uint16_t portnum = 8081;
-    struct sigaction sa;
-
-    if (-1 == sigemptyset(&sa.sa_mask))
-        die("sigemptyset");
-
-    sa.sa_handler = signull;
-    sa.sa_flags = 0;
-    sa.sa_restorer = NULL;
-
-    if (-1 == sigaction(SIGINT, &sa, NULL))
-        die("sigaction");
-
-    if (-1 == sigaction(SIGTERM, &sa, NULL))
-        die("sigaction");
-
-    if (-1 == sigaction(SIGQUIT, &sa, NULL))
-        die("sigaction");
 
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
         die("signal(SIGPIPE)");
