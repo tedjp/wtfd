@@ -1,6 +1,6 @@
 COMPILE = gcc -std=gnu11 -Wall -g
 
-all: debug wtfd waffle-baked
+all: debug wtfd
 
 wtfd: wtfd.c
 	$(COMPILE) -O3 -o $@ $<
@@ -8,11 +8,8 @@ wtfd: wtfd.c
 debug: wtfd.c
 	$(COMPILE) -O0 -o $@ $<
 
-waffle-baked: waffle-baked.c
-	$(COMPILE) -O2 -o $@ $<
-
 clean:
-	rm -f wtfd debug waffle-baked
+	rm -f wtfd debug
 
 install: wtfd
 	mkdir -p $(DESTDIR)/usr/sbin
