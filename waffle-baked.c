@@ -36,6 +36,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+//#include <netinet/tcp.h>
+#include <linux/tcp.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -108,6 +110,11 @@ static void read_client(int epfd, const struct epoll_event *event) {
 
     if (len == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
         perror("recv");
+        unsubscribe_and_close(epfd, client);
+        return;
+    }
+
+    if (len == 0) {
         unsubscribe_and_close(epfd, client);
         return;
     }
@@ -195,6 +202,20 @@ static void reuseaddr(int sock) {
         perror("setsockopt SO_REUSEADDR");
 }
 
+static void enable_fastopen_accept_no_cookie(int sock) {
+    const int yes = 1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_FASTOPEN_NO_COOKIE, &yes, sizeof(yes)) == -1)
+        perror("setsockopt TCP_FASTOPEN_NO_COOKIE");
+}
+
+static void enable_fastopen_accept(int sock) {
+    const int msg_size = 65535;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_FASTOPEN, &msg_size, sizeof(msg_size)) == -1)
+        perror("setsockopt TCP_FASTOPEN");
+
+    enable_fastopen_accept_no_cookie(sock);
+}
+
 int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
@@ -229,6 +250,7 @@ int main(int argc, char *argv[]) {
         die("socket");
 
     reuseaddr(sock);
+    enable_fastopen_accept(sock);
 
     memset(&sin6, 0, sizeof(sin6));
     sin6.sin6_family = AF_INET6;
