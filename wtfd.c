@@ -51,11 +51,12 @@ static void signull(int signum) {
     /* The sound of silence. */
 }
 
-static const char response[] = "HTTP/1.1 200 OK\n"
-"Content-Type: application/json\n"
-"Content-Length: 15\n"
-"\n"
-"{\"some\":\"json\"}";
+static const char response[] = "HTTP/1.1 200 OK\r\n"
+"Server: wtfd\r\n"
+"Content-Type: text/plain; charset=us-ascii\r\n"
+"Content-Length: 4\r\n"
+"\r\n"
+"wtf\n";
 
 static void unsubscribe(int epfd, int fd) {
     if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL) == -1)
