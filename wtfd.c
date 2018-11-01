@@ -41,14 +41,10 @@
 
 #define NCPUS 8
 
-static void die(const char *cause) __attribute__((noreturn));
-void die(const char *cause) {
+static void fatal(const char *cause) __attribute__((noreturn));
+void fatal(const char *cause) {
     perror(cause);
     exit(1);
-}
-
-static void signull(int signum) {
-    /* The sound of silence. */
 }
 
 static const char response[] = "HTTP/1.1 200 OK\r\n"
@@ -200,26 +196,9 @@ int main(int argc, char *argv[]) {
     int sock;
     struct sockaddr_in6 sin6;
     uint16_t portnum = 23206;
-    struct sigaction sa;
-
-    if (-1 == sigemptyset(&sa.sa_mask))
-        die("sigemptyset");
-
-    sa.sa_handler = signull;
-    sa.sa_flags = 0;
-    sa.sa_restorer = NULL;
-
-    if (-1 == sigaction(SIGINT, &sa, NULL))
-        die("sigaction");
-
-    if (-1 == sigaction(SIGTERM, &sa, NULL))
-        die("sigaction");
-
-    if (-1 == sigaction(SIGQUIT, &sa, NULL))
-        die("sigaction");
 
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
-        die("signal(SIGPIPE)");
+        fatal("signal(SIGPIPE)");
 
     // TODO: SO_REUSEPORT a unique socket per child
     // TODO: Enable TCP_FASTOPEN
@@ -227,7 +206,7 @@ int main(int argc, char *argv[]) {
     // TODO: Set TCP_DEFER_ACCEPT
     sock = socket(PF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock == -1) 
-        die("socket");
+        fatal("socket");
 
     reuseaddr(sock);
 
@@ -237,16 +216,16 @@ int main(int argc, char *argv[]) {
     sin6.sin6_addr = in6addr_any;
 
     if (-1 == bind(sock, (struct sockaddr *)&sin6, sizeof(sin6)))
-        die("bind");
+        fatal("bind");
 
     if (-1 == listen(sock, 1000))
-        die("listen");
+        fatal("listen");
 
     multiply();
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
-        die("epoll_create");
+        fatal("epoll_create");
 
     struct epoll_event event = {
         .events = EPOLLIN,
@@ -260,13 +239,13 @@ int main(int argc, char *argv[]) {
 #endif
 
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, sock, &event) == -1)
-        die("epoll_ctl add");
+        fatal("epoll_ctl add");
 
     for (;;) {
         struct epoll_event events[10];
         int count = epoll_wait(epfd, events, sizeof(events) / sizeof(events[0]), -1);
         if (count == -1)
-            die("epoll_wait");
+            fatal("epoll_wait");
 
         if (count == 0)
             continue;
