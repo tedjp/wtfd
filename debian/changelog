@@ -1,3 +1,20 @@
+wtfd (1.2) unstable; urgency=medium
+
+  * Use debhelper 9 rather than 11
+  * Better throughput with epoll
+  * Fork 7 children to spread load across CPUs
+  * Handle up to ten events at a time
+  * Force C11 (GNU dialect) for old compilers
+  * Conditionalize EPOLLEXCLUSIVE
+  * Increase listen backlog to 1000
+  * Send HTTP response
+  * Enable connection reuse
+  * Put carriage returns in HTTP syntax
+  * Enable TCP Fast Open w/o cookie
+  * Remove annoying signal handlers
+
+ -- Ted Percival <ted@tedp.id.au>  Wed, 21 Nov 2018 21:11:40 -0700
+
 wtfd (1.1) unstable; urgency=medium
 
   * Specify release tag format in gbp.conf
