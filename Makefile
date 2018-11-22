@@ -15,4 +15,10 @@ install: wtfd
 	mkdir -p $(DESTDIR)/usr/sbin
 	cp wtfd $(DESTDIR)/usr/sbin
 
+dch-release:
+	gbp dch --release --git-author
+
+release:
+	gbp buildpackage
+
 .PHONY: all clean install
