@@ -225,7 +225,7 @@ int main(int argc, char *argv[]) {
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd == -1)
-        fatal("epoll_create");
+        fatal("epoll_create1");
 
     struct epoll_event event = {
         .events = EPOLLIN,
