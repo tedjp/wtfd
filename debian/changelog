@@ -1,3 +1,12 @@
+wtfd (2.0) unstable; urgency=medium
+
+  * 2.0 since the change to HTTP in v1.2 should have caused a major version
+      bump.
+  * Update syscall filter & MaxTasks to fix systemd service
+  * More accurate error message when epoll_create1 fails
+
+ -- Ted Percival <ted@tedp.id.au>  Wed, 21 Nov 2018 21:24:11 -0700
+
 wtfd (1.2) unstable; urgency=medium
 
   * Use debhelper 9 rather than 11
