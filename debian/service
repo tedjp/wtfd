@@ -10,7 +10,6 @@ SystemCallFilter=accept access arch_prctl bind close epoll_create1 epoll_ctl epo
 SystemCallFilter=open read rt_sigaction sendto socket
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
-DeviceAccess=closed
 MemoryHigh=2M
 MemoryMax=10M
 TasksMax=8
