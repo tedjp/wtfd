@@ -1,3 +1,10 @@
+wtfd (2.1) unstable; urgency=medium
+
+  * Remove DeviceAccess=closed
+  * Add DevicePolicy=strict to systemd service
+
+ -- Ted Percival <ted@tedp.id.au>  Sun, 25 Nov 2018 21:50:46 -0700
+
 wtfd (2.0) unstable; urgency=medium
 
   * 2.0 since the change to HTTP in v1.2 should have caused a major version
