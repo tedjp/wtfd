@@ -12,7 +12,9 @@ Run:
 
 Use (as a client):
 
-    nc localhost 23206 < /dev/null
+    curl localhost:23206
+    
+Or open your browser to http://localhost:23206/
 
 It has Debian/Ubuntu packaging and includes a systemd service file. To build the
 package:
